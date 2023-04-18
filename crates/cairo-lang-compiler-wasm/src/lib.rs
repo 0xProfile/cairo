@@ -1,9 +1,18 @@
 mod utils;
 
-use std::{path::{PathBuf, Path}, fs};
-
-use cairo_lang_compiler::db::RootDatabase;
-use cairo_lang_filesystem::{ids::{Directory, CrateLongId}, db::{CORELIB_CRATE_NAME, FilesGroup, FilesGroupEx}};
+use std::{path::{PathBuf, Path}, fs, sync::Arc, error::Error};
+use anyhow::{Context};
+use cairo_lang_defs::db::DefsGroup;
+use cairo_lang_lowering::ids::ConcreteFunctionWithBodyId;
+use cairo_lang_parser::db::ParserGroup;
+use cairo_lang_sierra_generator::db::SierraGenGroup;
+use cairo_lang_sierra_to_casm::{compiler::{CairoProgram, CompilationError}, metadata::calc_metadata};
+use cairo_lang_utils::{Upcast, unordered_hash_map::UnorderedHashMap};
+use smol_str::SmolStr;
+use core::result::Result::Ok;
+use cairo_lang_compiler::{db::RootDatabase, compile_cairo_project_at_path, CompilerConfig, compile_prepared_db, project::setup_project};
+use cairo_lang_filesystem::{ids::{Directory, CrateLongId, FileLongId, VirtualFile, FileId}, db::{CORELIB_CRATE_NAME, FilesGroup, FilesGroupEx}};
+use cairo_lang_sierra::ProgramParser;
 use wasm_bindgen::prelude::*;
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -78,23 +87,107 @@ extern "C" {
 //     fn read_file(path: &str) -> Result<String, JsValue>;
 // }
 
+#[wasm_bindgen]
+pub fn test_compile() -> String {
+    console_error_panic_hook::set_once();
+    match compile_cairo_project_at_path(
+        &PathBuf::from("/home/cairo-lang/cairo-lang/cairo-lang-compiler-wasm"),
+        CompilerConfig { replace_ids: true, ..CompilerConfig::default() },
+    ) {
+        Ok(_) => {
+            return "OK".to_string();
+        }
+        Err(e) => {
+            log(&format!("Error: {}", e.to_string()));
+            "Error".to_string()
+        }
+
+    }
+}
 
 
 #[wasm_bindgen]
 pub struct RootDatabaseWASM (RootDatabase);
 
 #[wasm_bindgen]
-pub fn build_db(path: String) ->  RootDatabaseWASM {
+pub fn build_db(filename: String, content: String) -> Result<String, String>{
+    console_error_panic_hook::set_once();
+    let clone_filename = filename.clone();
     let mut db = RootDatabase::default();
+    let corelib_path = PathBuf::from("/corelib/src");
+
     let core_crate = db.intern_crate(CrateLongId(CORELIB_CRATE_NAME.into()));
-    let core_root_dir = Directory(PathBuf::from(path));
+    let core_root_dir = Directory(corelib_path);
+
     db.set_crate_root(core_crate, Some(core_root_dir));
-    RootDatabaseWASM(db)
+    // corelib path /corelib/src
+
+
+
+    let root_path = PathBuf::from("/");
+
+    let temp_path = PathBuf::from(filename.clone());
+    let mut requested_function_ids = vec![];
+
+    match setup_project(&mut db, temp_path.as_path()) {
+        
+        Ok(main_crate_ids) => {
+            let new_file = db.intern_file(FileLongId::Virtual(VirtualFile {
+                parent: Some(FileId::new(&db, root_path.clone())),
+                name: SmolStr::new(clone_filename.as_str()),
+                content: Arc::new(content),
+            }));
+            for crate_id in main_crate_ids {
+                for module_id in db.crate_modules(crate_id).iter() {
+                    let syntax_db:&dyn DefsGroup = db.upcast();
+                    let module_file = db.module_main_file(*module_id).unwrap_or_else(|_| {
+                        log(format!("Module {:?} has no main file", module_id).as_str());
+                        return FileId::new(&db, root_path.clone());
+                    });
+                    log(&format!("Module file: {:?}", module_file));
+                    // log(&format!("Module file content: {:?}", db.file_content(module_file).unwrap()));
+                    // let file_syntax = db.file_syntax(module_file).unwrap();
+                    // let temp = db.module_free_functions(*module_id);
+                    // match temp {
+                    //     Ok(temp) => {
+                    //         for (free_func_id, _) in temp {
+                    //             if let Some(function) =
+                    //                 ConcreteFunctionWithBodyId::from_no_generics_free(db.upcast(), free_func_id)
+                    //             {
+                    //                 requested_function_ids.push(function)
+                    //             }
+                    //         }
+                    //     }
+                    //     Err(e) => {
+                    //         log(&format!("Error:"));
+                    //         return Err("Error".to_string());
+                    //     }
+                    // }
+                    return Ok("OK".to_string());
+                }
+            }
+            let p = db.get_sierra_program_for_functions(requested_function_ids);
+            match p {
+                Ok(program) => {
+                    log("OK");
+                    Ok(program.to_string())
+                }
+                Err(e) => {
+                    log(&format!("Error in compile:"));
+                    return Err("Error".to_string());
+                }
+            }
+            // 
+        }
+        Err(e) => {
+            log(&format!("Project Error: {}", e.to_string()));
+            return Err("Project Error".to_string());
+        }
+    }
 }
 
 #[wasm_bindgen]
 pub fn read_db(db: &RootDatabaseWASM) -> String {
-    
     #[cfg(wasmpack_target="nodejs")]
     log("from nodejs");
     #[cfg(wasmpack_target="browser")]
@@ -119,3 +212,40 @@ pub fn read_db(db: &RootDatabaseWASM) -> String {
     // }
     return "Hello".to_string();
 }
+
+
+#[wasm_bindgen]
+pub fn parser(sierra_code: String) -> String {
+    console_error_panic_hook::set_once();
+
+    match ProgramParser::new().parse(&sierra_code) {
+        Ok(program) => {
+            // log("Parsing successful");
+            let gas_usage_check = true;
+            let cairo_program = cairo_lang_sierra_to_casm::compiler::compile(
+                &program,
+                &calc_metadata(&program, Default::default())
+                    .with_context(|| "Failed calculating Sierra variables.").unwrap_or_else(|e| {
+                        log(format!("Error: {}", e).as_str());
+                        panic!("Error: {}", e)
+                    }),
+                gas_usage_check,
+            )
+            .with_context(|| "Compilation failed.");
+        
+            return format!("{:?}", cairo_program);
+        }
+        Err(e) => {
+            log(format!("Error: {}", e).as_str());
+            return "Error".to_string();
+        }
+    }
+
+
+}
+// init_logging(log::LevelFilter::Off);
+// log::info!("Starting Sierra compilation.");
+
+
+
+// fs::write(args.output, format!("{cairo_program}")).with_context(|| "Failed to write output.")

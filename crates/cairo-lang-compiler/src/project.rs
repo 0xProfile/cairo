@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use wasm_bindgen::prelude::*;
 
 use cairo_lang_defs::ids::ModuleId;
 use cairo_lang_filesystem::db::FilesGroupEx;
@@ -32,9 +33,9 @@ fn setup_single_file_project(
             return Err(ProjectError::BadFileExtension);
         }
     }
-    if !path.exists() {
-        return Err(ProjectError::NoSuchFile { path: path.to_string_lossy().to_string() });
-    }
+    // if !path.exists() {
+    //     return Err(ProjectError::NoSuchFile { path: path.to_string_lossy().to_string() });
+    // }
     let bad_path_err = || ProjectError::BadPath { path: path.to_string_lossy().to_string() };
     let file_stem = path.file_stem().and_then(OsStr::to_str).ok_or_else(bad_path_err)?;
     if file_stem == "lib" {
@@ -53,6 +54,11 @@ fn setup_single_file_project(
         let file_id = db.module_main_file(module_id).unwrap();
         db.as_files_group_mut()
             .override_file_content(file_id, Some(Arc::new(format!("mod {file_stem};"))));
+        let content = db.file_content(file_id).unwrap().clone();
+        log(&content);
+        log(format!("setup_single_file_project: {file_stem}", file_stem=file_stem).as_str());
+        // unsafe { log("setup_single_file_project: {file_stem} {module_id} {file_id}") };
+        // unsafe { log(&db.file_content(file_id).unwrap().as_str()) };
         Ok(crate_id)
     }
 }
@@ -70,6 +76,23 @@ pub fn update_crate_roots_from_project_config(db: &mut dyn SemanticGroup, config
     }
 }
 
+#[wasm_bindgen]
+extern "C" {
+    // Use `js_namespace` here to bind `console.log(..)` instead of just
+    // `log(..)`
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    // The `console.log` is quite polymorphic, so we can bind it with multiple
+    // signatures. Note that we need to use `js_name` to ensure we always call
+    // `log` in JS.
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_u32(a: u32);
+
+    // Multiple arguments too!
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_many(a: &str, b: &str);
+}
 /// Setup the 'db' to compile the project in the given path.
 /// The path can be either a directory with cairo project file or a .cairo file.
 /// Returns the ids of the project crates.

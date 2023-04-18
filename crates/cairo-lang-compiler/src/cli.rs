@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -24,19 +24,19 @@ fn main() -> anyhow::Result<()> {
     init_logging(log::LevelFilter::Off);
     log::info!("Starting Cairo compilation.");
 
-    let args = Args::parse();
-
+    // let args = Args::parse();
+    
     let sierra_program = compile_cairo_project_at_path(
-        &args.path,
-        CompilerConfig { replace_ids: args.replace_ids, ..CompilerConfig::default() },
+        Path::new("/Users/eric/Desktop/dev/hack-scaling/cairo/examples/fib.cairo"),
+        CompilerConfig { replace_ids: true, ..CompilerConfig::default() },
     )?;
 
-    match args.output {
-        Some(path) => {
-            fs::write(path, format!("{sierra_program}")).context("Failed to write output.")?
-        }
-        None => println!("{sierra_program}"),
-    }
+    // match args.output {
+    //     Some(path) => {
+    //         fs::write(path, format!("{sierra_program}")).context("Failed to write output.")?
+    //     }
+    //     None => println!("{sierra_program}"),
+    // }
 
     Ok(())
 }

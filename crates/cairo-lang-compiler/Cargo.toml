@@ -9,6 +9,7 @@ description = "Cairo compiler."
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+wasm-bindgen = "0.2.63"
 cairo-lang-diagnostics = { path = "../cairo-lang-diagnostics", version = "1.0.0-alpha.7" }
 cairo-lang-defs = { path = "../cairo-lang-defs", version = "1.0.0-alpha.7" }
 cairo-lang-filesystem = { path = "../cairo-lang-filesystem", version = "1.0.0-alpha.7" }
